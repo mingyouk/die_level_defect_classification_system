@@ -1,0 +1,130 @@
+%% Die Level Defect Classification
+%  Prepared by Ming You
+
+%% Section 0: Environment & Variables set-up
+%  Ward
+ward = 'C:\Users\mingyou.kwong\Google Drive\Universiti_Teknologi_Malaysia\Die_Defect_Classification'; 
+datasetDir = fullfile(ward, 'Dataset', 'Original'); 
+roiDir = fullfile(ward, 'Dataset', 'ROI'); 
+resultDir = fullfile(ward, 'Results', 'Classification'); 
+if ~exist(roiDir, 'dir') 
+    mkdir(roiDir);
+end
+if ~exist(resultDir, 'dir') 
+    mkdir(resultDir);
+end
+addpath(ward); 
+addpath(datasetDir); 
+addpath(roiDir); 
+addpath(resultDir); 
+cd(ward); 
+
+%  Convolution Neural Network
+%  In this project, we used alexnet
+net = alexnet; 
+
+%% Section 1: Image Pre-processing
+%  load sample
+
+file = 'DieCrack01.png'; 
+category = 'DieCrack'; 
+sample = imread(fullfile(datasetDir, category, file)); 
+
+%  Convert sample image from RGB to gray color
+I2 = rgb2gray(sample); 
+
+%  To detect the fiducial on ROI, first we need to detect the biggest
+%  circle from the sample image. There might be more than one fiducial, we
+%  can get the right one by filtering the coordinate of the circles. 
+[centers, radii] = imfindcircles(sample, [10 30], 'Method', 'TwoStage', 'Sensitivity', 0.59, 'ObjectPolarity','bright'); 
+if (isempty(centers) || isempty(radii)) 
+    figure
+    imshow(sample); 
+    mask = roipoly(sample); 
+    ROI = sample.*cast(mask, class(sample));
+    
+else
+    % sample size
+    [sample_x,sample_y, sample_z] = size(sample); 
+        
+    % Fiducial marks usually has the largest radius among circles
+    largestRadius = max(radii); 
+    idx = find(radii == max(radii));
+    idx2=idx; 
+    values=radii(radii(:) == largestRadius); % values
+
+    for idx_loop = 1:length(idx)
+        centers_largeCircles(idx_loop, :) = centers(idx(idx_loop), :);
+    end
+
+    [centers_largeCircles_x, centers_largeCircles_y] = size(centers_largeCircles); 
+    % Usually a sample photo has more than 1 fiducial mark
+    % the following is used to get the correct fiducial mark
+    % filter using coordinates
+    for idx_loop = 1:length(centers_largeCircles)
+        if ((centers_largeCircles(idx_loop)/sample_x > 0.5) && (centers_largeCircles(idx_loop+centers_largeCircles_x)/sample_y < 0.5)) 
+%            fprintf('idx_loop = %d, %d and %d\n', idx_loop, centers_largeCircles(idx_loop), centers_largeCircles(idx_loop+centers_largeCircles_x)); 
+            fiducial_coordinate = centers_largeCircles(idx_loop, :); 
+            continue; 
+        end
+    end
+    x = [fiducial_coordinate(1)-1250, fiducial_coordinate(1)-50, fiducial_coordinate(1)-50, fiducial_coordinate(1)-1250];
+    y = [fiducial_coordinate(2)+675, fiducial_coordinate(2)+675, fiducial_coordinate(2)+35, fiducial_coordinate(2)+35]; 
+
+    mask = roipoly(sample, x, y);  
+    ROI = sample.*cast(mask, class(sample));
+            
+end
+%figure; 
+%imshow(ROI); 
+% Store the processed images
+cd(roiDir); 
+imwrite(ROI, [file, '.png'], 'png'); 
+
+cd(ward); 
+%close all; 
+
+%% Section 2: Training network
+%  For ground truth purpose
+%trainingImageLabeler
+
+
+layersTransfer = net.Layers(1:end-3);
+
+layers = [...
+    layersTransfer
+    fullyConnectedLayer(numClasses) 
+    softmaxLayer
+    classificationLayer];
+ 
+% Due to limited memory in GPU, the MiniBatchSize is reduced from 32
+% (default) to 10
+options = trainingOptions('sgdm', ...
+  'MiniBatchSize', 10, ...
+  'InitialLearnRate', 1e-6, ...
+  'MaxEpochs', 90);
+
+load('matlab\classification_5_2_ROI_only.mat'); 
+load('matlab\rcnn5_3_9.mat'); 
+%rcnn = trainRCNNObjectDetector(Classification_8_1, layers, options, 'NegativeOverlapRange', [0 0.1]);
+
+[bbox, score, label] = detect(rcnn, ROI, 'MiniBatchSize', 15);
+[score1, idx] = max(score);
+
+bbox1 = bbox(idx, :);
+
+if (isempty(score1))
+    fprintf ('Oh no! No defect detected\n'); 
+    cd (resultDir);
+    imwrite(sample, [file, '_NoDefectDetected', '.png'], 'png');
+    
+else
+    figure;
+    annotation = sprintf('%s: (Confidence = %f)', label(idx), score(idx));
+    detectedImg = insertObjectAnnotation(sample, 'rectangle', bbox1, annotation, 'FontSize', 40, 'LineWidth', 10);
+    imshow(detectedImg);
+    cd (resultDir);
+    imwrite(detectedImg, [file, '_', char(label(idx)), '.png'], 'png'); 
+    fprintf('%s\n', label(idx)); 
+
+end
